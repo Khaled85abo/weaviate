@@ -4,16 +4,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, create_engine, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from langchain.vectorstores import Weaviate
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.llms import OpenAI
 import weaviate
-import uuid
-import json
+import weaviate.classes as wvc
 import os
-from langchain.embeddings.openai import OpenAIEmbeddings
+from weaviate.classes.config import Configure
+from langchain.llms import OpenAI
 from weaviate.classes.init import Auth
-
+from langchain.embeddings.openai import OpenAIEmbeddings
 
 # SQLAlchemy setup
 Base = declarative_base()
@@ -48,93 +45,65 @@ engine = create_engine('sqlite:///example.db')
 SessionLocal = sessionmaker(bind=engine)
 Base.metadata.create_all(bind=engine)
 
-# Initialize LangChain Weaviate Vector Store
+# Initialize Weaviate client
+WCD_URL = os.environ["WEAVAITE_URL"]
+WCD_API_KEY = os.environ["WEAVAITE_API_KEY"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-
-
-# Best practice: store your credentials in environment variables
-wcd_url = os.environ["WEAVAITE_URL"]
-wcd_api_key = os.environ["WEAVAITE_API_KEY"]
-openai_api_key = os.environ["OPENAI_API_KEY"]
-
-weaviate_client = weaviate.connect_to_weaviate_cloud(
-    cluster_url=wcd_url,  # Replace with your Weaviate Cloud URL
-    auth_credentials=Auth.api_key(wcd_api_key),  # Replace with your Weaviate Cloud key
-    headers={'X-OpenAI-Api-key': openai_api_key}  # Replace with your OpenAI API key
+client = weaviate.connect_to_weaviate_cloud(
+    cluster_url=WCD_URL,  # Replace with your Weaviate Cloud URL
+    auth_credentials=Auth.api_key(WCD_API_KEY),  # Replace with your Weaviate Cloud key
+    headers={'X-OpenAI-Api-key': OPENAI_API_KEY}  # Replace with your OpenAI API key
 )
-
 
 # Initialize the embedding model
-embedding_model = OpenAIEmbeddings(openai_api_key = openai_api_key, model = "text-embedding-3-large")
+embedding_model = Configure.Vectorizer.text2vec_openai()
+# embeddings_openai =  OpenAIEmbeddings( model ="text-embedding-3-large", openai_api_key=OPENAI_API_KEY)
 
-# Initialize LangChain Weaviate vector store
-vectorstore = Weaviate(
-    client=weaviate_client,
-    embedding=embedding_model,
-    by_text=False  # Since we're providing embeddings
-)
-
-# Define the classes and properties
+# Create Weaviate schema
 def create_weaviate_schema():
-    class_definitions = []
+    client.collections.delete("User")
+    client.collections.delete("Item")
+    client.collections.delete("Manual")
+    client.collections.delete("Purchase")
 
-    # User class
-    user_class = {
-        'class': 'User',
-        'description': 'A user in the system',
-        'vectorizer': 'none',
-        'properties': [
-            {'name': 'name', 'dataType': ['text']},
-            {'name': 'id', 'dataType': ['int']},
-        ]
-    }
-    class_definitions.append(user_class)
+    client.collections.create(
+        name="User",
+        properties=[
+            wvc.config.Property(name="name", data_type=wvc.config.DataType.TEXT),
+            wvc.config.Property(name="id", data_type=wvc.config.DataType.INT)
+        ],
+        vectorizer_config=embedding_model
+    )
 
-    # Item class
-    item_class = {
-        'class': 'Item',
-        'description': 'An item in the system',
-        'vectorizer': 'none',
-        'properties': [
-            {'name': 'description', 'dataType': ['text']},
-            {'name': 'id', 'dataType': ['int']},
-        ]
-    }
-    class_definitions.append(item_class)
+    client.collections.create(
+        name="Item",
+        properties=[
+            wvc.config.Property(name="description", data_type=wvc.config.DataType.TEXT),
+            wvc.config.Property(name="id", data_type=wvc.config.DataType.INT)
+        ],
+        vectorizer_config=embedding_model
+    )
 
-    # Manual class
-    manual_class = {
-        'class': 'Manual',
-        'description': 'A manual for an item',
-        'vectorizer': 'none',
-        'properties': [
-            {'name': 'content', 'dataType': ['text']},
-            {'name': 'item_id', 'dataType': ['int']},
-            {'name': 'id', 'dataType': ['int']},
-        ]
-    }
-    class_definitions.append(manual_class)
+    client.collections.create(
+        name="Manual",
+        properties=[
+            wvc.config.Property(name="content", data_type=wvc.config.DataType.TEXT),
+            wvc.config.Property(name="item_id", data_type=wvc.config.DataType.INT),
+            wvc.config.Property(name="id", data_type=wvc.config.DataType.INT)
+        ],
+        vectorizer_config=embedding_model
+    )
 
-    # Purchase class
-    purchase_class = {
-        'class': 'Purchase',
-        'description': 'A purchase in the system',
-        'vectorizer': 'none',
-        'properties': [
-            {'name': 'user_id', 'dataType': ['int']},
-            {'name': 'item_id', 'dataType': ['int']},
-            {'name': 'id', 'dataType': ['int']},
-        ]
-    }
-    class_definitions.append(purchase_class)
-
-    # Create classes if they don't exist
-    existing_classes = weaviate_client.schema.get()['classes']
-    existing_class_names = [cls['class'] for cls in existing_classes]
-
-    for class_def in class_definitions:
-        if class_def['class'] not in existing_class_names:
-            weaviate_client.schema.create_class(class_def)
+    client.collections.create(
+        name="Purchase",
+        properties=[
+            wvc.config.Property(name="user_id", data_type=wvc.config.DataType.INT),
+            wvc.config.Property(name="item_id", data_type=wvc.config.DataType.INT),
+            wvc.config.Property(name="id", data_type=wvc.config.DataType.INT)
+        ],
+        vectorizer_config=embedding_model
+    )
 
 create_weaviate_schema()
 
@@ -174,17 +143,11 @@ def create_user(user: UserCreate):
     db.commit()
     db.refresh(db_user)
 
-    # Generate embedding for the user name
-    embedding = embedding_model.embed_text(db_user.name)
-
-    # Add user to Weaviate using LangChain vector store
-    metadata = {'name': db_user.name, 'id': db_user.id}
-    vectorstore.add_texts(
-        texts=[db_user.name],
-        metadatas=[metadata],
-        ids=[f'User_{db_user.id}'],
-        namespace='User'
-    )
+    # Add user to Weaviate
+    client.collections.get("User").data.insert({
+        "name": db_user.name,
+        "id": db_user.id
+    })
     return db_user
 
 # Delete a user
@@ -198,7 +161,9 @@ def delete_user(user_id: int):
     db.commit()
 
     # Delete user from Weaviate
-    vectorstore.delete(ids=[f'User_{user_id}'], namespace='User')
+    client.collections.get("User").data.delete(
+        where={"path": ["id"], "operator": "Equal", "valueInt": user_id}
+    )
     return {'detail': 'User deleted'}
 
 # Create an item
@@ -210,17 +175,11 @@ def create_item(item: ItemCreate):
     db.commit()
     db.refresh(db_item)
 
-    # Generate embedding for the item description
-    embedding = embedding_model.embed_text(db_item.description)
-
-    # Add item to Weaviate using LangChain vector store
-    metadata = {'description': db_item.description, 'id': db_item.id}
-    vectorstore.add_texts(
-        texts=[db_item.description],
-        metadatas=[metadata],
-        ids=[f'Item_{db_item.id}'],
-        namespace='Item'
-    )
+    # Add item to Weaviate
+    client.collections.get("Item").data.insert({
+        "description": db_item.description,
+        "id": db_item.id
+    })
     return db_item
 
 # Update an item
@@ -235,16 +194,9 @@ def update_item(item_id: int, item: ItemUpdate):
     db.refresh(db_item)
 
     # Update item in Weaviate
-    # First delete the old entry
-    vectorstore.delete(ids=[f'Item_{item_id}'], namespace='Item')
-
-    # Add updated item
-    metadata = {'description': db_item.description, 'id': db_item.id}
-    vectorstore.add_texts(
-        texts=[db_item.description],
-        metadatas=[metadata],
-        ids=[f'Item_{db_item.id}'],
-        namespace='Item'
+    client.collections.get("Item").data.update(
+        where={"path": ["id"], "operator": "Equal", "valueInt": item_id},
+        properties={"description": db_item.description}
     )
     return db_item
 
@@ -259,7 +211,9 @@ def delete_item(item_id: int):
     db.commit()
 
     # Delete item from Weaviate
-    vectorstore.delete(ids=[f'Item_{item_id}'], namespace='Item')
+    client.collections.get("Item").data.delete(
+        where={"path": ["id"], "operator": "Equal", "valueInt": item_id}
+    )
     return {'detail': 'Item deleted'}
 
 # Create a manual
@@ -271,17 +225,12 @@ def create_manual(manual: ManualCreate):
     db.commit()
     db.refresh(db_manual)
 
-    # Generate embedding for the manual content
-    embedding = embedding_model.embed_text(db_manual.content)
-
-    # Add manual to Weaviate using LangChain vector store
-    metadata = {'content': db_manual.content, 'item_id': db_manual.item_id, 'id': db_manual.id}
-    vectorstore.add_texts(
-        texts=[db_manual.content],
-        metadatas=[metadata],
-        ids=[f'Manual_{db_manual.id}'],
-        namespace='Manual'
-    )
+    # Add manual to Weaviate
+    client.collections.get("Manual").data.insert({
+        "content": db_manual.content,
+        "item_id": db_manual.item_id,
+        "id": db_manual.id
+    })
     return db_manual
 
 # Update a manual
@@ -296,16 +245,9 @@ def update_manual(manual_id: int, manual: ManualUpdate):
     db.refresh(db_manual)
 
     # Update manual in Weaviate
-    # First delete the old entry
-    vectorstore.delete(ids=[f'Manual_{manual_id}'], namespace='Manual')
-
-    # Add updated manual
-    metadata = {'content': db_manual.content, 'item_id': db_manual.item_id, 'id': db_manual.id}
-    vectorstore.add_texts(
-        texts=[db_manual.content],
-        metadatas=[metadata],
-        ids=[f'Manual_{db_manual.id}'],
-        namespace='Manual'
+    client.collections.get("Manual").data.update(
+        where={"path": ["id"], "operator": "Equal", "valueInt": manual_id},
+        properties={"content": db_manual.content}
     )
     return db_manual
 
@@ -320,7 +262,9 @@ def delete_manual(manual_id: int):
     db.commit()
 
     # Delete manual from Weaviate
-    vectorstore.delete(ids=[f'Manual_{manual_id}'], namespace='Manual')
+    client.collections.get("Manual").data.delete(
+        where={"path": ["id"], "operator": "Equal", "valueInt": manual_id}
+    )
     return {'detail': 'Manual deleted'}
 
 # Create a purchase
@@ -332,39 +276,33 @@ def create_purchase(purchase: PurchaseCreate):
     db.commit()
     db.refresh(db_purchase)
 
-    # Generate embedding for the purchase
-    purchase_text = f"User ID: {db_purchase.user_id}, Item ID: {db_purchase.item_id}"
-    embedding = embedding_model.embed_text(purchase_text)
-
-    # Add purchase to Weaviate using LangChain vector store
-    metadata = {'user_id': db_purchase.user_id, 'item_id': db_purchase.item_id, 'id': db_purchase.id}
-    vectorstore.add_texts(
-        texts=[purchase_text],
-        metadatas=[metadata],
-        ids=[f'Purchase_{db_purchase.id}'],
-        namespace='Purchase'
-    )
+    # Add purchase to Weaviate
+    client.collections.get("Purchase").data.insert({
+        "user_id": db_purchase.user_id,
+        "item_id": db_purchase.item_id,
+        "id": db_purchase.id
+    })
     return db_purchase
 
 # Search endpoint
 @app.get('/search/')
 def search(query: str):
-    embedding = embedding_model.embed_query(query)
-
-    # Search across 'Item' and 'Manual' namespaces
+    # Search across 'Item' and 'Manual' collections
     results = []
 
-    for namespace in ['Item', 'Manual']:
-        matches = vectorstore.similarity_search_with_score_by_vector(
-            embedding=embedding,
-            namespace=namespace,
-            k=5
+    for collection_name in ['Item', 'Manual']:
+        collection = client.collections.get(collection_name)
+        response = collection.query.near_text(
+            query=query,
+            limit=5,
+            return_metadata=wvc.query.MetadataQuery(distance=True)
         )
-        for doc, score in matches:
-            metadata = doc.metadata
-            metadata['class'] = namespace
-            metadata['score'] = score
-            results.append(metadata)
+        for obj in response.objects:
+            results.append({
+                "class": collection_name,
+                "properties": obj.properties,
+                "score": obj.metadata.distance
+            })
 
     if not results:
         return {'answer': 'No relevant results found.'}
@@ -373,9 +311,9 @@ def search(query: str):
     context = ""
     for item in results:
         if item['class'] == 'Item':
-            context += f"Item: {item.get('description', '')}\n"
+            context += f"Item: {item['properties'].get('description', '')}\n"
         elif item['class'] == 'Manual':
-            context += f"Manual Content: {item.get('content', '')}\n"
+            context += f"Manual Content: {item['properties'].get('content', '')}\n"
 
     # Construct the prompt
     prompt = f"""
